@@ -36,6 +36,7 @@ type BudgetData = {
   incomes: Record<Person, number>;
   expenses: Expense[];
   savings: Record<Person, number>;
+  planNames: Record<Person, string>;
   notes: { id: number; scope: string; body: string; updatedAt: string }[];
   audit: AuditEntry[];
   totals: {
@@ -56,7 +57,7 @@ type BudgetData = {
   };
 };
 
-const nav: { id: Screen; label: string; short: string; icon: string }[] = [
+const baseNav: { id: Screen; label: string; short: string; icon: string }[] = [
   { id: "overview", label: "Overview", short: "Home", icon: "⌂" },
   { id: "me", label: "My budget", short: "Mine", icon: "●" },
   { id: "partner", label: "Partner budget", short: "Partner", icon: "●" },
@@ -90,8 +91,8 @@ const currency = new Intl.NumberFormat("en-GB", {
 
 const money = (n: number) => currency.format(n);
 const percent = (n: number) => `${Math.round(n * 100)}%`;
-const scopeName = (scope: string) =>
-  ({ me: "My budget", partner: "Partner budget", shared_housing: "Housing", shared_other: "Household", shared: "Shared" })[scope] ?? scope;
+const scopeName = (scope: string, planNames?: Record<Person, string>) =>
+  ({ me: planNames?.me ?? "My budget", partner: planNames?.partner ?? "Partner budget", shared_housing: "Housing", shared_other: "Household", shared: "Shared" })[scope] ?? scope;
 const actionName = (action: string) => action.replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 function Icon({ name }: { name: string }) {
@@ -117,10 +118,11 @@ export default function BudgetApp() {
   const [data, setData] = useState<BudgetData | null>(null);
   const [screen, setScreen] = useState<Screen>("overview");
   const [month, setMonth] = useState("July 2026");
-  const [modal, setModal] = useState<"expense" | "income" | "savings" | "note" | null>(null);
+  const [modal, setModal] = useState<"expense" | "income" | "savings" | "plan" | "note" | null>(null);
   const [draft, setDraft] = useState<Partial<Expense>>(blankExpense());
   const [person, setPerson] = useState<Person>("me");
   const [amount, setAmount] = useState(0);
+  const [planName, setPlanName] = useState("");
   const [noteText, setNoteText] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -190,6 +192,14 @@ export default function BudgetApp() {
     setError("");
   };
 
+  const openPlanName = (who: Person) => {
+    if (!data) return;
+    setPerson(who);
+    setPlanName(data.planNames[who]);
+    setModal("plan");
+    setError("");
+  };
+
   const submitExpense = (event: FormEvent) => {
     event.preventDefault();
     const body = { kind: "expense", ...draft, amount: Number(draft.amount) };
@@ -219,6 +229,11 @@ export default function BudgetApp() {
     );
   }
 
+  const nav = baseNav.map((item) => item.id === "me"
+    ? { ...item, label: data.planNames.me, short: data.planNames.me }
+    : item.id === "partner"
+      ? { ...item, label: data.planNames.partner, short: data.planNames.partner }
+      : item);
   const screenTitle = nav.find((item) => item.id === screen)?.label ?? "Overview";
   const paid = data.expenses.filter((item) => item.paid).reduce((sum, item) => sum + item.amount, 0);
   const totalCommitted = data.totals.committed.me + data.totals.committed.partner;
@@ -288,6 +303,7 @@ export default function BudgetApp() {
           {screen === "audit" && (
             <AuditLog
               entries={filteredAudit}
+              planNames={data.planNames}
               query={auditQuery}
               setQuery={setAuditQuery}
               scope={auditScope}
@@ -305,6 +321,7 @@ export default function BudgetApp() {
               setDark={setDark}
               openIncome={(who) => openMoney("income", who)}
               openSavings={(who) => openMoney("savings", who)}
+              openPlanName={openPlanName}
               openNote={() => { setNoteText(""); setModal("note"); }}
               removeNote={(id) => void mutate("DELETE", undefined, `?kind=note&id=${id}`)}
             />
@@ -332,7 +349,7 @@ export default function BudgetApp() {
                   <label className="span-2">Title<input autoFocus required value={draft.title ?? ""} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="e.g. Water bill" /></label>
                   <label>Amount (£)<input required type="number" min="0" step="0.01" value={draft.amount ?? 0} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} /></label>
                   <label>Budget<select value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value as Scope })}>
-                    <option value="me">My budget</option><option value="partner">Partner budget</option>
+                    <option value="me">{data.planNames.me}</option><option value="partner">{data.planNames.partner}</option>
                     <option value="shared_housing">Shared housing (75/25)</option><option value="shared_other">Shared household (income split)</option>
                   </select></label>
                   <label>Category<select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })}>
@@ -353,12 +370,22 @@ export default function BudgetApp() {
             )}
             {(modal === "income" || modal === "savings") && (
               <form onSubmit={(e) => { e.preventDefault(); void mutate("PATCH", { kind: modal, person, amount }); }}>
-                <p className="eyebrow">{person === "me" ? "My budget" : "Partner budget"}</p>
+                <p className="eyebrow">{data.planNames[person]}</p>
                 <h2 id="modal-title">Update {modal}</h2>
                 <label>Monthly amount (£)<input autoFocus type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(Number(e.target.value))} /></label>
                 <p className="form-hint">{modal === "income" ? "Changing income immediately recalculates every non-housing shared bill." : "This is deducted after committed spending."}</p>
                 {error && <p className="form-error">{error}</p>}
                 <div className="modal-actions"><button type="button" className="text-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" disabled={saving}>{saving ? "Saving…" : "Save change"}</button></div>
+              </form>
+            )}
+            {modal === "plan" && (
+              <form onSubmit={(e) => { e.preventDefault(); void mutate("PATCH", { kind: "plan_name", person, name: planName }); }}>
+                <p className="eyebrow">Plan name</p>
+                <h2 id="modal-title">Rename {data.planNames[person]}</h2>
+                <label>Name<input autoFocus required maxLength={40} value={planName} onChange={(e) => setPlanName(e.target.value)} placeholder="e.g. Alex’s budget" /></label>
+                <p className="form-hint">This name will be used in navigation, expenses, summaries and the audit log.</p>
+                {error && <p className="form-error">{error}</p>}
+                <div className="modal-actions"><button type="button" className="text-button" onClick={() => setModal(null)}>Cancel</button><button className="primary-button" disabled={saving}>{saving ? "Saving…" : "Save name"}</button></div>
               </form>
             )}
             {modal === "note" && (
@@ -391,22 +418,22 @@ function Overview({ data, paid, totalCommitted, openExpense, setScreen }: {
           <div className="balance-top"><span>Combined monthly income</span><em>100%</em></div>
           <strong>{money(data.split.combinedIncome)}</strong>
           <div className="income-split">
-            <button onClick={() => setScreen("me")}><span>My income</span><b>{money(data.incomes.me)}</b><small>{percent(data.split.incomePercentages.me)} of total</small></button>
-            <button onClick={() => setScreen("partner")}><span>Partner income</span><b>{money(data.incomes.partner)}</b><small>{percent(data.split.incomePercentages.partner)} of total</small></button>
+            <button onClick={() => setScreen("me")}><span>{data.planNames.me}</span><b>{money(data.incomes.me)}</b><small>{percent(data.split.incomePercentages.me)} of total income</small></button>
+            <button onClick={() => setScreen("partner")}><span>{data.planNames.partner}</span><b>{money(data.incomes.partner)}</b><small>{percent(data.split.incomePercentages.partner)} of total income</small></button>
           </div>
         </section>
         <section className="available-card">
           <p>Left after bills & savings</p>
           <strong>{money(data.totals.disposable.me + data.totals.disposable.partner)}</strong>
           <Progress value={Math.max(0, ((data.totals.disposable.me + data.totals.disposable.partner) / data.split.combinedIncome) * 100)} />
-          <div><span><i className="dot me" />Mine <b>{money(data.totals.disposable.me)}</b></span><span><i className="dot partner" />Partner <b>{money(data.totals.disposable.partner)}</b></span></div>
+          <div><span><i className="dot me" />{data.planNames.me} <b>{money(data.totals.disposable.me)}</b></span><span><i className="dot partner" />{data.planNames.partner} <b>{money(data.totals.disposable.partner)}</b></span></div>
         </section>
       </div>
       {data.split.zeroIncome && <div className="warning-banner">Add at least one income to calculate the proportional household split. Housing remains fixed at 75/25.</div>}
       <div className="metric-grid">
-        <MetricCard label="Shared housing" value={money(data.totals.housing)} meta={`My share ${money(data.split.housingShares.me)} · 75%`} tone="blue" />
+        <MetricCard label="Shared housing" value={money(data.totals.housing)} meta={`${data.planNames.me} ${money(data.split.housingShares.me)} · 75%`} tone="blue" />
         <MetricCard label="Household bills" value={money(data.totals.other)} meta={`Income split ${percent(data.split.incomePercentages.me)} / ${percent(data.split.incomePercentages.partner)}`} tone="gold" />
-        <MetricCard label="Planned savings" value={money(data.savings.me + data.savings.partner)} meta={`Mine ${money(data.savings.me)} · Partner ${money(data.savings.partner)}`} />
+        <MetricCard label="Planned savings" value={money(data.savings.me + data.savings.partner)} meta={`${data.planNames.me} ${money(data.savings.me)} · ${data.planNames.partner} ${money(data.savings.partner)}`} />
         <MetricCard label="Paid so far" value={money(paid)} meta={`${money(Math.max(0, totalCommitted - paid))} still committed`} tone="blue" />
       </div>
       <div className="overview-lower">
@@ -445,7 +472,7 @@ function PersonSummary({ data, person }: { data: BudgetData; person: Person }) {
   const remaining = data.totals.remainingBeforeSavings[person];
   return (
     <section className={`person-hero ${person}`}>
-      <div><p>{person === "me" ? "My monthly income" : "Partner monthly income"}</p><strong>{money(income)}</strong><small>{percent(data.split.incomePercentages[person])} of household income</small></div>
+      <div><p>{data.planNames[person]} income</p><strong>{money(income)}</strong><small>{percent(data.split.incomePercentages[person])} of household income</small></div>
       <div className="person-flow">
         <span><small>Committed</small><b>− {money(data.totals.committed[person])}</b></span>
         <i>→</i><span><small>Before savings</small><b>{money(remaining)}</b></span>
@@ -463,7 +490,7 @@ function PersonalBudget({ data, person, openExpense, openMoney, onToggle, onEdit
   const ownExpenses = data.expenses.filter((expense) => expense.scope === person);
   return (
     <>
-      <div className="page-heading"><div><p className="eyebrow">{person === "me" ? "Personal plan" : "Partner plan"}</p><h1>{person === "me" ? "My budget" : "Partner budget"}</h1><p>Income, personal spending, shared commitments and savings in one place.</p></div><button className="secondary-button" onClick={() => openMoney("income", person)}>Edit income</button></div>
+      <div className="page-heading"><div><p className="eyebrow">Personal plan</p><h1>{data.planNames[person]}</h1><p>Income, personal spending, shared commitments and savings in one place.</p></div><button className="secondary-button" onClick={() => openMoney("income", person)}>Edit income</button></div>
       <PersonSummary data={data} person={person} />
       <div className="metric-grid four">
         <MetricCard label="Personal bills" value={money(data.totals.personal[person])} meta={`${ownExpenses.length} items`} />
@@ -494,8 +521,8 @@ function SharedBudget({ data, openExpense, onToggle, onEdit }: {
       <section className="split-hero">
         <div><p>Total shared costs</p><strong>{money(data.split.combinedShared)}</strong><small>{housing.length + other.length} bills this month</small></div>
         <div className="split-people">
-          <span><i className="avatar me">M</i><small>My total share</small><b>{money(data.split.housingShares.me + data.split.otherShares.me)}</b></span>
-          <span><i className="avatar partner">P</i><small>Partner total share</small><b>{money(data.split.housingShares.partner + data.split.otherShares.partner)}</b></span>
+          <span><i className="avatar me">{data.planNames.me.slice(0, 1).toUpperCase()}</i><small>{data.planNames.me}</small><b>{money(data.split.housingShares.me + data.split.otherShares.me)}</b></span>
+          <span><i className="avatar partner">{data.planNames.partner.slice(0, 1).toUpperCase()}</i><small>{data.planNames.partner}</small><b>{money(data.split.housingShares.partner + data.split.otherShares.partner)}</b></span>
         </div>
       </section>
       {data.split.zeroIncome && <div className="warning-banner">Income-based bills are waiting for income. Add at least one salary in Settings; housing is still allocated at 75/25.</div>}
@@ -503,13 +530,13 @@ function SharedBudget({ data, openExpense, onToggle, onEdit }: {
         <article className="rule-card">
           <div className="rule-card-top"><span className="rule-icon">⌂</span><div><p className="eyebrow">Fixed split</p><h2>Housing · 75 / 25</h2></div><strong>{money(data.totals.housing)}</strong></div>
           <div className="split-bar"><span className="me" style={{ width: "75%" }} /><span className="partner" style={{ width: "25%" }} /></div>
-          <div className="split-labels"><span>Mine <b>{money(data.split.housingShares.me)}</b></span><span>Partner <b>{money(data.split.housingShares.partner)}</b></span></div>
+          <div className="split-labels"><span>{data.planNames.me} <b>{money(data.split.housingShares.me)}</b></span><span>{data.planNames.partner} <b>{money(data.split.housingShares.partner)}</b></span></div>
           <p>Housing always stays at this fixed split, even if either income changes.</p>
         </article>
         <article className="rule-card">
           <div className="rule-card-top"><span className="rule-icon gold">%</span><div><p className="eyebrow">Income split</p><h2>Household · {percent(data.split.incomePercentages.me)} / {percent(data.split.incomePercentages.partner)}</h2></div><strong>{money(data.totals.other)}</strong></div>
           <div className="split-bar"><span className="me gold" style={{ width: percent(data.split.incomePercentages.me) }} /><span className="partner" style={{ width: percent(data.split.incomePercentages.partner) }} /></div>
-          <div className="split-labels"><span>Mine <b>{money(data.split.otherShares.me)}</b></span><span>Partner <b>{money(data.split.otherShares.partner)}</b></span></div>
+          <div className="split-labels"><span>{data.planNames.me} <b>{money(data.split.otherShares.me)}</b></span><span>{data.planNames.partner} <b>{money(data.split.otherShares.partner)}</b></span></div>
           <p>Every non-housing bill uses current income: person income ÷ {money(data.split.combinedIncome)} × bill.</p>
         </article>
       </div>
@@ -535,7 +562,7 @@ function ExpenseTable({ expenses, data, onToggle, onEdit, compact = false }: {
               <div><strong>{expense.title}</strong><small>{expense.category} · {expense.recurring ? "Recurring" : "One-off"} · due {new Date(`${expense.dueDate}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</small></div>
             </div>
             {!compact && expense.scope.startsWith("shared") && <div className="allocation"><small>My share</small><b>{money(myShare)}</b></div>}
-            <div className="expense-amount"><strong>{money(expense.amount)}</strong><small>{expense.paid ? "Paid" : scopeName(expense.scope)}</small></div>
+            <div className="expense-amount"><strong>{money(expense.amount)}</strong><small>{expense.paid ? "Paid" : scopeName(expense.scope, data.planNames)}</small></div>
             <button className="row-menu" onClick={() => onEdit(expense)} aria-label={`Edit ${expense.title}`}>•••</button>
           </article>
         );
@@ -544,8 +571,8 @@ function ExpenseTable({ expenses, data, onToggle, onEdit, compact = false }: {
   );
 }
 
-function AuditLog({ entries, query, setQuery, scope, setScope, action, setAction, date, setDate }: {
-  entries: AuditEntry[]; query: string; setQuery: (v: string) => void; scope: string; setScope: (v: string) => void;
+function AuditLog({ entries, planNames, query, setQuery, scope, setScope, action, setAction, date, setDate }: {
+  entries: AuditEntry[]; planNames: Record<Person, string>; query: string; setQuery: (v: string) => void; scope: string; setScope: (v: string) => void;
   action: string; setAction: (v: string) => void; date: string; setDate: (v: string) => void;
 }) {
   const actions = Array.from(new Set(entries.map((e) => e.actionType)));
@@ -554,7 +581,7 @@ function AuditLog({ entries, query, setQuery, scope, setScope, action, setAction
       <div className="page-heading"><div><p className="eyebrow">Complete history</p><h1>Audit log</h1><p>Every meaningful change, kept on the server and easy to trace.</p></div><span className="secure-badge">◎ Server recorded</span></div>
       <section className="filter-bar">
         <label className="search"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search title, category or note…" /></label>
-        <select value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Filter by scope"><option value="all">All budgets</option><option value="me">My budget</option><option value="partner">Partner</option><option value="shared_housing">Housing</option><option value="shared_other">Household</option><option value="shared">Shared</option></select>
+        <select value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Filter by scope"><option value="all">All budgets</option><option value="me">{planNames.me}</option><option value="partner">{planNames.partner}</option><option value="shared_housing">Housing</option><option value="shared_other">Household</option><option value="shared">Shared</option></select>
         <select value={action} onChange={(e) => setAction(e.target.value)} aria-label="Filter by action"><option value="all">All actions</option>{actions.map((a) => <option key={a} value={a}>{actionName(a)}</option>)}</select>
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} aria-label="Filter by date" />
       </section>
@@ -562,7 +589,7 @@ function AuditLog({ entries, query, setQuery, scope, setScope, action, setAction
         {entries.length ? entries.map((entry) => (
           <article className="audit-row" key={entry.id}>
             <span className={`audit-icon ${entry.actionType.includes("delete") ? "delete" : entry.actionType.includes("create") ? "create" : ""}`}>{entry.actionType.includes("delete") ? "−" : entry.actionType.includes("create") ? "+" : "↻"}</span>
-            <div><strong>{entry.summary}</strong><p><span>{actionName(entry.actionType)}</span><span>{scopeName(entry.budgetScope)}</span><span>{entry.entityType}</span></p></div>
+            <div><strong>{entry.summary}</strong><p><span>{actionName(entry.actionType)}</span><span>{scopeName(entry.budgetScope, planNames)}</span><span>{entry.entityType}</span></p></div>
             <time dateTime={entry.timestamp}>{new Date(`${entry.timestamp.replace(" ", "T")}Z`).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</time>
           </article>
         )) : <div className="empty-state"><span>⌕</span><h3>No matching changes</h3><p>Try clearing one of the filters.</p></div>}
@@ -571,17 +598,17 @@ function AuditLog({ entries, query, setQuery, scope, setScope, action, setAction
   );
 }
 
-function Settings({ data, dark, setDark, openIncome, openSavings, openNote, removeNote }: {
-  data: BudgetData; dark: boolean; setDark: (v: boolean) => void; openIncome: (p: Person) => void; openSavings: (p: Person) => void; openNote: () => void; removeNote: (id: number) => void;
+function Settings({ data, dark, setDark, openIncome, openSavings, openPlanName, openNote, removeNote }: {
+  data: BudgetData; dark: boolean; setDark: (v: boolean) => void; openIncome: (p: Person) => void; openSavings: (p: Person) => void; openPlanName: (p: Person) => void; openNote: () => void; removeNote: (id: number) => void;
 }) {
   return (
     <>
       <div className="page-heading"><div><p className="eyebrow">Household preferences</p><h1>Settings</h1><p>Keep the numbers and little details behind your plan up to date.</p></div></div>
       <div className="settings-grid">
         <section className="panel">
-          <div className="panel-heading"><div><p className="eyebrow">Monthly</p><h2>Income & savings</h2></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">Monthly</p><h2>Plans, income & savings</h2></div></div>
           {(["me", "partner"] as Person[]).map((person) => (
-            <div className="settings-person" key={person}><span className={`avatar ${person}`}>{person === "me" ? "M" : "P"}</span><div><strong>{person === "me" ? "My plan" : "Partner plan"}</strong><small>Income {money(data.incomes[person])} · Savings {money(data.savings[person])}</small></div><button className="text-button" onClick={() => openIncome(person)}>Income</button><button className="text-button" onClick={() => openSavings(person)}>Savings</button></div>
+            <div className="settings-person" key={person}><span className={`avatar ${person}`}>{data.planNames[person].slice(0, 1).toUpperCase()}</span><div><strong>{data.planNames[person]}</strong><small>Income {money(data.incomes[person])} · Savings {money(data.savings[person])}</small></div><div className="settings-actions"><button className="text-button" onClick={() => openPlanName(person)}>Rename</button><button className="text-button" onClick={() => openIncome(person)}>Income</button><button className="text-button" onClick={() => openSavings(person)}>Savings</button></div></div>
           ))}
         </section>
         <section className="panel">

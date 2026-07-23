@@ -33,6 +33,13 @@ export const savingsAllocations = sqliteTable("savings_allocations", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const planNames = sqliteTable("plan_names", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  person: text("person", { enum: ["me", "partner"] }).notNull().unique(),
+  name: text("name").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const notes = sqliteTable("notes", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   scope: text("scope").notNull().default("shared"),

@@ -31,6 +31,12 @@ const tables = [
     amount REAL NOT NULL DEFAULT 0 CHECK(amount >= 0),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS plan_names (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person TEXT NOT NULL UNIQUE CHECK(person IN ('me','partner')),
+    name TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
   `CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scope TEXT NOT NULL DEFAULT 'shared',
@@ -75,6 +81,10 @@ function database() {
 async function initialize() {
   const db = database();
   await db.batch(tables.map((statement) => db.prepare(statement)));
+  await db.batch([
+    db.prepare("INSERT OR IGNORE INTO plan_names(person, name) VALUES (?, ?)").bind("me", "My budget"),
+    db.prepare("INSERT OR IGNORE INTO plan_names(person, name) VALUES (?, ?)").bind("partner", "Partner budget"),
+  ]);
   const count = await db.prepare("SELECT COUNT(*) AS count FROM incomes").first<{ count: number }>();
   if ((count?.count ?? 0) > 0) return;
 
@@ -112,12 +122,20 @@ const cleanExpense = (row: D1Row) => ({
   updatedAt: String(row.updated_at),
 });
 
+async function currentPlanNames() {
+  const result = await database().prepare("SELECT person, name FROM plan_names ORDER BY person").all<D1Row>();
+  const names = { me: "My budget", partner: "Partner budget" };
+  for (const row of result.results) names[row.person as "me" | "partner"] = String(row.name);
+  return names;
+}
+
 async function snapshot() {
   const db = database();
-  const [incomeResult, expenseResult, savingsResult, noteResult, auditResult] = await Promise.all([
+  const [incomeResult, expenseResult, savingsResult, planNameResult, noteResult, auditResult] = await Promise.all([
     db.prepare("SELECT * FROM incomes ORDER BY person").all<D1Row>(),
     db.prepare("SELECT * FROM expenses ORDER BY due_date, id").all<D1Row>(),
     db.prepare("SELECT * FROM savings_allocations ORDER BY person").all<D1Row>(),
+    db.prepare("SELECT * FROM plan_names ORDER BY person").all<D1Row>(),
     db.prepare("SELECT * FROM notes ORDER BY updated_at DESC").all<D1Row>(),
     db.prepare("SELECT * FROM audit_logs ORDER BY timestamp DESC, id DESC LIMIT 500").all<D1Row>(),
   ]);
@@ -127,6 +145,8 @@ async function snapshot() {
   const expenses = expenseResult.results.map(cleanExpense);
   const savings = { me: 0, partner: 0 };
   for (const row of savingsResult.results) savings[row.person as "me" | "partner"] = Number(row.amount);
+  const planNames = { me: "My budget", partner: "Partner budget" };
+  for (const row of planNameResult.results) planNames[row.person as "me" | "partner"] = String(row.name);
   const housingTotal = expenses.filter((e) => e.scope === "shared_housing").reduce((n, e) => n + e.amount, 0);
   const otherTotal = expenses.filter((e) => e.scope === "shared_other").reduce((n, e) => n + e.amount, 0);
   const split = calculateSharedSplits(incomes, housingTotal, otherTotal);
@@ -143,6 +163,7 @@ async function snapshot() {
     incomes,
     expenses,
     savings,
+    planNames,
     notes: noteResult.results.map((row) => ({
       id: Number(row.id),
       scope: String(row.scope),
@@ -234,7 +255,7 @@ export async function POST(request: Request) {
         .bind(record.title, record.amount, record.scope, record.category, record.notes, record.dueDate, record.recurring ? 1 : 0, record.paid ? 1 : 0)
         .run();
       const id = String(result.meta.last_row_id);
-      await audit("create_expense", "expense", id, scope, null, record, `Added ${record.title} to ${scopeLabel(scope)}`);
+      await audit("create_expense", "expense", id, scope, null, record, `Added ${record.title} to ${scopeLabel(scope, await currentPlanNames())}`);
     } else if (kind === "note") {
       const note = String(body.body ?? "").trim();
       if (!note) return Response.json({ error: "Note cannot be empty." }, { status: 400 });
@@ -256,7 +277,17 @@ export async function PATCH(request: Request) {
     const kind = String(body.kind ?? "");
     const db = database();
 
-    if (kind === "income") {
+    if (kind === "plan_name") {
+      const person = String(body.person);
+      const name = String(body.name ?? "").trim();
+      if (!["me", "partner"].includes(person) || !name || name.length > 40) {
+        return Response.json({ error: "Plan names must be between 1 and 40 characters." }, { status: 400 });
+      }
+      const before = await db.prepare("SELECT * FROM plan_names WHERE person = ?").bind(person).first<D1Row>();
+      if (!before) return Response.json({ error: "Plan not found." }, { status: 404 });
+      await db.prepare("UPDATE plan_names SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE person = ?").bind(name, person).run();
+      await audit("edit_plan_name", "plan", person, person, before, { name }, `Renamed ${String(before.name)} to ${name}`);
+    } else if (kind === "income") {
       const person = String(body.person);
       const amount = Number(body.amount);
       if (!["me", "partner"].includes(person) || !Number.isFinite(amount) || amount < 0) {
@@ -265,7 +296,8 @@ export async function PATCH(request: Request) {
       const before = await db.prepare("SELECT * FROM incomes WHERE person = ?").bind(person).first();
       await db.prepare("UPDATE incomes SET amount = ?, note = ?, updated_at = CURRENT_TIMESTAMP WHERE person = ?")
         .bind(amount, String(body.note ?? ""), person).run();
-      await audit("edit_income", "income", person, person, before, { amount, note: body.note }, `Updated ${person === "me" ? "my" : "partner"} income to £${amount.toFixed(2)}; shared split recalculated`);
+      const names = await currentPlanNames();
+      await audit("edit_income", "income", person, person, before, { amount, note: body.note }, `Updated ${names[person as "me" | "partner"]} income to £${amount.toFixed(2)}; shared split recalculated`);
     } else if (kind === "savings") {
       const person = String(body.person);
       const amount = Number(body.amount);
@@ -274,7 +306,8 @@ export async function PATCH(request: Request) {
       }
       const before = await db.prepare("SELECT * FROM savings_allocations WHERE person = ?").bind(person).first();
       await db.prepare("UPDATE savings_allocations SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE person = ?").bind(amount, person).run();
-      await audit("edit_savings", "savings", person, person, before, { amount }, `Updated ${person === "me" ? "my" : "partner"} planned savings to £${amount.toFixed(2)}`);
+      const names = await currentPlanNames();
+      await audit("edit_savings", "savings", person, person, before, { amount }, `Updated ${names[person as "me" | "partner"]} planned savings to £${amount.toFixed(2)}`);
     } else if (kind === "expense") {
       const id = Number(body.id);
       const beforeRow = await db.prepare("SELECT * FROM expenses WHERE id = ?").bind(id).first<D1Row>();
@@ -297,7 +330,7 @@ export async function PATCH(request: Request) {
         "UPDATE expenses SET title = ?, amount = ?, scope = ?, category = ?, notes = ?, due_date = ?, recurring = ?, paid = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       ).bind(next.title, next.amount, next.scope, next.category, next.notes, next.dueDate, next.recurring ? 1 : 0, next.paid ? 1 : 0, id).run();
       const action = before.scope !== next.scope ? "change_expense_type" : before.paid !== next.paid ? "mark_paid_unpaid" : before.recurring !== next.recurring ? "toggle_recurring" : "edit_expense";
-      await audit(action, "expense", String(id), next.scope, before, next, `${next.title} updated in ${scopeLabel(next.scope)}`);
+      await audit(action, "expense", String(id), next.scope, before, next, `${next.title} updated in ${scopeLabel(next.scope, await currentPlanNames())}`);
     } else if (kind === "note") {
       const id = Number(body.id);
       const before = await db.prepare("SELECT * FROM notes WHERE id = ?").bind(id).first();
@@ -327,7 +360,7 @@ export async function DELETE(request: Request) {
     if (!before) return Response.json({ error: "Record not found." }, { status: 404 });
     await db.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
     const scope = String(before.scope ?? "shared");
-    await audit(`delete_${kind}`, kind!, String(id), scope, before, null, kind === "expense" ? `Deleted ${String(before.title)} from ${scopeLabel(scope)}` : "Deleted a household note");
+    await audit(`delete_${kind}`, kind!, String(id), scope, before, null, kind === "expense" ? `Deleted ${String(before.title)} from ${scopeLabel(scope, await currentPlanNames())}` : "Deleted a household note");
     return Response.json(await snapshot());
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to delete" }, { status: 500 });

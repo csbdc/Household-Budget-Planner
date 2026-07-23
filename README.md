@@ -18,6 +18,7 @@ The single source of truth for these rules is [`lib/budget-rules.ts`](./lib/budg
 - Overview, My Budget, Partner Budget, Shared Household, Audit Log, and Settings
 - Create, edit, delete, classify, pay/unpay, and make expenses recurring
 - Editable income and savings for both partners
+- Editable names for both personal plans, used throughout the interface
 - Automatic split recalculation after relevant changes
 - Server-side audit entries with before/after values
 - Audit search and scope, action, and date filters

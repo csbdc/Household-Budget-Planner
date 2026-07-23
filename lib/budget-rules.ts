@@ -43,11 +43,11 @@ export function calculateSharedSplits(
   };
 }
 
-export function scopeLabel(scope: string) {
+export function scopeLabel(scope: string, planNames?: Record<"me" | "partner", string>) {
   return (
     {
-      me: "My budget",
-      partner: "Partner budget",
+      me: planNames?.me ?? "My budget",
+      partner: planNames?.partner ?? "Partner budget",
       shared_housing: "Shared housing",
       shared_other: "Shared household",
     }[scope] ?? scope
