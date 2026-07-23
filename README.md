@@ -37,6 +37,20 @@ docker compose up --build
 
 Open `http://localhost:3000`. Stop with `docker compose down`. Your database remains in the named `budget_data` volume. To remove that data intentionally, run `docker compose down --volumes`.
 
+### Container build workflow
+
+The repository includes `.github/workflows/container.yml`. Pull requests build
+the image without publishing it. Pushes to `main`, manual runs, and `v*` tags
+publish multi-architecture images with provenance attestations and an SBOM to
+GitHub Container Registry:
+
+```text
+ghcr.io/<github-owner>/<repository>:latest
+```
+
+The workflow uses the repository's built-in `GITHUB_TOKEN`, so no additional
+registry secret is required.
+
 ## Local development
 
 Requirements: Node.js 22+ and pnpm 11+.
